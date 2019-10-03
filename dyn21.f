@@ -3375,6 +3375,65 @@ c--------------------------------------------------------------------
       end 
 
 c--------------------------------------------------------------------
+c     subroutine for a cubic interpolation scheme
+c     assuming natural bdry conditions for second deriv
+c--------------------------------------------------------------------
+       subroutine cubic_interp(np,xv,yv,ni,xi,yi)
+       integer np,i,k,ni,j,l
+       real*8 y2(np),xv(np),yv(np),yi(ni),u(np),xi(ni)
+       real*8 sig,p,qn,un,h,b,a
+
+c      first, need to calculate second deriv approximations
+c      xv is x data, yv is y data of known values
+c      y2 is vector of second derivs
+c      yi is returned interpolated values
+c      u is used for temporary storage
+
+c      natural bdry condition
+       y2(1) = 0.0
+       u(1) = 0.0
+
+       do 26 i=1,(np-1)
+         sig=(xv(i)-xv(i-1))/(xv(i+1)-xv(i-1))
+         p=sig*y2(i-1)+2.0
+         y2(i)=(sig-1.0)/p;
+         u(i)=(yv(i+1)-yv(i))/(xv(i+1)-xv(i))
+     .   -(yv(i)-yv(i-1))/(xv(i)-xv(i-1))
+         u(i)=(6.0*u(i)/(xv(i+1)-xv(i-1))-sig*u(i-1))/p
+26     continue
+
+       qn=0.0
+       un=0.0
+
+       y2(np)=(un-qn*u(np-1))/(qn*y2(np-1)+1.0)
+       
+       do 27 k=1,(np-1)
+         y2(k)=y2(k)*y2(k+1)+u(k)
+27     continue
+
+c      second derivs are now calculated. now evaluate spline
+
+       do 28 j=1,ni
+         if (xi(j).lt.xv(1).or.xi(j).gt.xv(np)) then
+c          beyond working cross-bridge range
+           yi(j)=0.0
+         else
+           do 29 l=2,np
+c            find which interval xi is in
+             if (xv(l-1).le.xi(j).and.xi(j).le.xv(l)) then
+               h=xv(l)-xv(l-1)
+               a=(xv(l)-xi(j))/h
+               b=(xi(j)-xv(l-1))/h
+               yi(j)=a*yv(l-1)+b*yv(l)+((a*a*a-a)*y2(l-1)+
+     .               (b*b*b-b)*y2(l))*(h*h)/6.0
+             endif
+29         continue
+         endif
+28     continue
+       return
+       end
+
+c--------------------------------------------------------------------
       subroutine umat43(cm,eps,sig,epsp,hsv,dt1,capa,etype,tt,
      1 temper,failel,crv,cma,qmat,elsiz,idele)
 c
@@ -3468,7 +3527,7 @@ c     Calcium and pCa
   
 c     N_bound0: proportion of myosin heads attached to actin at beginning of timestep
 c     N_on0: proportion of thin filaments "on" at beginning of timestep
-      real*8 N_bound0, N_on0
+      real*8 N_bound0, N_on0, alpha
 
 c     arrays to hold rate function values. In general, kA_B represents rate 
 c     from state A to state B. Note, Attachment and detachment rates are 
@@ -3607,17 +3666,20 @@ c     t_start = t_act, this is redundant
       debug = cm(42)
       interval = cm(43)
       k42 = cm(45)
+      c2 = cm(46)
+      c3 = cm(47)
+      maxrate = cm(48)
 
 c     IHYPER=1, F=R'*F, in global frames
-      F1=hsv(61)
-      F4=hsv(62)
-      F7=hsv(63)
-      F2=hsv(64)
-      F5=hsv(65)
-      F8=hsv(66)
-      F3=hsv(67)
-      F6=hsv(68)
-      F9=hsv(69)
+      F1=hsv(65)
+      F4=hsv(66)
+      F7=hsv(67)
+      F2=hsv(68)
+      F5=hsv(69)
+      F8=hsv(70)
+      F3=hsv(71)
+      F6=hsv(72)
+      F9=hsv(73)
 
 c     save fiber directions in hsv
 c     xM is fiber direction, xN is cross-fiber
@@ -3625,6 +3687,10 @@ c     Initializing at time = 0.0
 
       if (time.eq.0.0) then
         debug_counter = 1
+        
+        if (cm(34).eq.5) then
+          open(235, file="calcium.txt")
+        endif
 c       write t_end for the script to know how to plot
         if(idele.eq.609) then
           open(1, file="base_epi.txt")
@@ -3666,10 +3732,15 @@ c       write t_end for the script to know how to plot
           write(8,*) cm(44)
           close(8)          
         endif
-        if(idele.eq.1140) then
+        if(idele.eq.1423) then
           open(9, file="apex_endo.txt")
           write(9,*) cm(44)
           close(9)          
+        endif
+        if(idele.eq.1) then
+          open(123, file="single_element.txt")
+          write(123,*) cm(44)
+          close(123)
         endif
         hsv(1)=xM(1)
         hsv(2)=xM(2)
@@ -3749,6 +3820,8 @@ c       hsv(57) is N_bound, initialized to zero
 c       hsv(58) is N_on, initialized to zero
         hsv(58) = x_cb0(24)
         hsv(60) = 1.0
+c       this is a debugging variable
+        hsv(62) = 0.0
 
 c       hsv(10) is active stress
         hsv(10) = 0.0
@@ -3856,6 +3929,10 @@ c    adding violating case by 2/11/16 by Xiaoyan Zhang
          saclen=hsv(11) 
       endif
 
+      alpha = sqrt(.5*((lo/lr)**2.0-1.0))
+
+c     Calculate myofiber passive stress
+
 c     saving sarcomere length 11/18/13 by Xiaoyan Zhang
       hsv(12)=saclen
 c     calculate the changes in half sarcomere length 
@@ -3931,7 +4008,7 @@ c      x_cb0(41) = hsv(54)
 c     Need the force from last time step to calculate rate of D1 -> D2       
       T_a10 = hsv(10)
 
-      
+      alpha = sqrt(2.0*e1+1.0)
 
         delta_D2 = 0.0
         sum_of_rates = 0.0
@@ -3975,7 +4052,35 @@ c         Using parameters to fit Ca from Jeremy Rice Paper
               Ca = Ca1*Ca4+10**(-1*cm(40))
             endif
    
+           elseif (cm(34).eq.4) then
+c          mouse 2 beat test calcium
+           if (time.lt.cm(41)) then
+             
+c            before activation, set to low ca
+             Ca = 1e-7
+           elseif ((time.gt.cm(41)).AND.(time.lt.08925)) then
+
+             Ca = -8.08534928*(time-cm(41))**4 + 
+     .         .6325761008*(time-cm(41))**3
+     .        -.0186252695*(time-cm(41))**2 
+     .        + .0002525961*(time-cm(41))+.000000198388
+           elseif ((time.gt..08925).AND.(time.lt..1593)) then
+             Ca = (1.28568e-6)*exp(-200*(time-cm(41)))
+     .            +1.49880227e-6
+           elseif ((time.gt.0.1593).AND.(time.lt.0.1892)) then 
+             Ca = -8.08534928*(time-.1593)**4 +
+     .        .6325761008*(time-.1593)**3
+     .        -.0186252695*(time-.1593)**2 
+     .        + .0002525961*(time-.1593)+.000000198388
+           elseif ((time.gt.0.1892).AND.(time.lt.cm(44))) then
+             Ca = (1.28568e-6)*exp(-200*(time-.1593))
+     .       +1.49880227e-6
            endif
+    
+           elseif (cm(34).eq.5) then
+c          read calcium in from text file
+           read(235, *) Ca
+       endif
        endif
 c          Calculate N_overlap, store in hsv(8)
 c          ------------------------------------
@@ -3998,6 +4103,9 @@ c          Use falloff rate to determine overlap
                N_overlap = 1.0
              endif
            endif
+           if (N_overlap.lt.hsv(58)) then
+             N_overlap = hsv(58)
+           endif
            hsv(8) = N_overlap
 
 c          Calculate Rates for ODE's
@@ -4011,9 +4119,25 @@ c          k_b is N*m/K
 c          kD2_A is k3, Gaussian attachment from D2 to A.
 c          Must account for bin-width:
 c          --------------------------
+
+
+c         Implement new myofiber passive law
+c         ----------------------------------
+          if (alpha.lt.1) then
+            myo_passive = 0
+          else
+      myo_passive=(1/alpha)*cm(46)*cm(47)*(alpha-1)*
+     .exp(cm(47)*(alpha-1)**2)
+          endif
+
+c        use ken's passive for now
+c         myo_passive=500*(exp(((hsl*1e9)+(hsv(13)*1e9)-900)/80)-1)
+
+          hsv(61) = myo_passive
+
            do 10 i = 1,21
-             bin_width = 1.142857143*1e-9
-             bin_position(i) = (-12e-9+bin_width*(i-1))
+             bin_width = 1e-9
+             bin_position(i) = (-10e-9+bin_width*(i-1))
 
              kd1 = bin_position(i)*bin_position(i)
              kd6 = -1*cm(22)*kd1
@@ -4025,8 +4149,8 @@ c          --------------------------
              kD2_A(i) = kd4*(N_on0-N_bound0)*kd7
              debug_rate(i) = kd4*kd7
 c            Limit very high rates
-             if (kD2_A(i).gt.10000) then
-               kD2_A(i) = 10000.0
+             if (kD2_A(i).gt.cm(48)) then
+               kD2_A(i) = cm(48)
              endif
 c            Prevent negative rates
              if (kD2_A(i).lt.0.0) then
@@ -4040,8 +4164,8 @@ c            ---------------------
              k42_2 = cm(45)*1e9
              kA_D2(i) = cm(17) + k41_rate*((bin_position(i))**4)
      &       +k42_1*(bin_position(i))**3 + k42_2*bin_position(i)
-             if (kA_D2(i).gt.10000) then
-               kA_D2(i) = 10000.0
+             if (kA_D2(i).gt.cm(48)) then
+               kA_D2(i) = cm(48)
              endif
              if (kA_D2(i).lt.0.0) then
                kA_D2(i) = 0.0
@@ -4052,7 +4176,19 @@ c            ---------------------
 
 c          Make sure to incorporate passive stress when updating rate
 c          from D1 to D2 as it depends on total stress
-           kD1_D2 = cm(15)*(1+cm(8)*(T_a10+hsv(7)))
+c           kD1_D2 = cm(15)*(1+cm(8)*(T_a10+hsv(7)))
+c           if (time.lt.cm(41)) then
+c           kD1_D2 = cm(15)*(1+cm(8)*(T_a10+hsv(7)))
+c           else
+c           kD1_D2 = cm(15)*(1+cm(8)*(T_a10+hsv(7)*
+c     .    (exp(-100*(time-cm(41))))))
+c          endif
+c           hsv(62) = alpha
+
+           kD1_D2 = cm(15)*(1+cm(8)*(hsv(10)+hsv(61)))
+
+
+c          hsv(60) = kD1_D2
            if (kD1_D2.lt.0.0) then
              kD1_D2=0.0
            endif
@@ -4079,6 +4215,12 @@ c          Initialize matrix to zero in case compiler does not
            M(22,23) = cm(21)
            M(23,22) = kD1_D2
 
+c          may have condition where N_on > N_overlap.
+           if (hsv(8).lt.hsv(58)) then
+             A(24,24) = 0
+             M(24,24) = -1*cm(20)
+             B(24,1) = cm(20)*N_bound0
+           else
            m1 = Ca*cm(19)
            m2 = cm(26)-1
            m3 = cm(26)+1
@@ -4087,6 +4229,10 @@ c          Initialize matrix to zero in case compiler does not
 
            A(24,24) = (cm(26)/N_overlap)*(cm(20)-Ca*cm(19))
            B(24,1)  = Ca*cm(19)*N_overlap+cm(20)*N_bound0*m3
+           endif
+
+c          store on-flux for thin filaments
+c           hsv(62) = A(24,24) + B(24,1) + M(24,24)
 
 c          Runge Kutta for updating the number in each state/bin
 c          -----------------------------------------------------
@@ -4106,10 +4252,11 @@ c          hsv(13) is the change in hsl in m, cm(24) is compliance factor
              moved_bins(i) = bin_position(i) - hsv(13)*cm(24)
 60         continue
 
-           call pwl_interp_1d(21,bin_position,x_cb,21,moved_bins,
+           call cubic_interp(21,bin_position,x_cb,21,moved_bins,
      .     x_cb_interp)
 
 c          Put ripped cross bridges back into D2
+c          Put ripped cross bridges back into SRX for validation against myosim
 c          -------------------------------------
            do 61 i = 1,21
              delta_D2 = delta_D2 + (x_cb(i) - x_cb_interp(i))
@@ -4147,6 +4294,7 @@ c          proceed with what has been calculated
         endif
 
       hsv(10) = T_a1
+      T_a1 = T_a1 + myo_passive
 
 c     partial derivative of W with repect to e1 to e6
 c     convert to wrt to C (dW/dC = 0.5*dW/dE)
@@ -4159,7 +4307,7 @@ c     material coordinate system
       sp5=0.5*dwdq*tb3*e5
       sp6=0.5*dwdq*tb4*e6
 c
-c     transform dWdC back to gobal axes
+c     transform dWdC back to global axes
 c     a=dWdCm*R
       a11   =sp1*s11+sp4*s21+sp6*s31
       a12   =sp1*s12+sp4*s22+sp6*s32
@@ -4421,8 +4569,34 @@ c     sound speed to pass into urmathn.f for time step determination
 c      Debugging
 c      hsv(60) is the counter
 
-       if(debug.gt.0) then
+       if (cm(42).gt.0) then
 c      debug interval = cm(43)
+      
+       if (idele.eq.1) then
+         open(123, file="single_element.txt",access="append")
+         tcheck = (hsv(60)-0.5)*cm(43)
+         hsv(62) = tcheck
+
+         if (time.ge.tcheck.AND.time.lt.tcheck+cm(43)) then
+             do 2244 j = 1,21
+               write(123,*) hsv(14+j-1)
+               write(123,*) kA_D2(j)
+               write(123,*) debug_rate(j)
+
+2244         continue
+             write(123,*) hsv(10)
+             write(123,*) hsv(57)
+             write(123,*) hsv(58)
+             write(123,*) hsv(59)
+             write(123,*) hsv(12)
+             write(123,*) hsv(55)
+             write(123,*) hsv(56)
+             hsv(60) = hsv(60)+1
+           
+         endif
+         close(123)
+       endif
+
        if(idele.eq.609) then
          open(1, file="base_epi.txt",access="append")
          tcheck = hsv(60)*cm(43)
@@ -4607,7 +4781,7 @@ c      debug interval = cm(43)
          close(8)
        endif
 
-       if(idele.eq.1140) then
+       if(idele.eq.1423) then
          open(9, file="apex_endo.txt",access="append")
          tcheck = hsv(60)*cm(43)
          if(time.ge.tcheck.AND.time.lt.tcheck+cm(43)) then
@@ -4787,6 +4961,12 @@ c         call matrix_mult(r2,44,44,y_squared,44,1,dy2dt)
          do 85 i = 1,24
          yout(i) = y_values(i,1) + h6*(dydt(i,1)+dyt(i,1)+ 2*dym(i,1))
 85       continue
+
+         do 456 i = 1,24
+           if (yout(i).lt.0) then
+             yout(i) = 0.0
+           endif
+456      continue
 
          return 
          
